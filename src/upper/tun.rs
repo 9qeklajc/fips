@@ -31,7 +31,7 @@ use tracing::error;
 use tracing::{debug, trace};
 #[cfg(windows)]
 use tracing::{error, warn};
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use tun::Layer;
 
 /// Read-only handle to the per-destination path MTU map. Populated by
@@ -217,6 +217,9 @@ impl TunDevice {
     /// Otherwise, creates a new TUN device.
     ///
     /// This requires CAP_NET_ADMIN capability (run with sudo or setcap).
+    /// Not available on Android — use [`TunDevice::from_fd`] to adopt the
+    /// fd provided by `VpnService`.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub async fn create(config: &TunConfig, address: FipsAddress) -> Result<Self, TunError> {
         // Check if IPv6 is enabled
         if platform::is_ipv6_disabled() {

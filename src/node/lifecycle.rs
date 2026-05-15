@@ -719,10 +719,20 @@ impl Node {
         // Initialize TUN interface last, after transports and peers are ready
         if self.config.tun.enabled {
             let address = *self.identity.address();
-            let device_result = if let Some(fd) = self.external_tun_fd {
-                TunDevice::from_fd(fd, &self.config.tun, address)
-            } else {
-                TunDevice::create(&self.config.tun, address).await
+            let device_result = match self.external_tun_fd {
+                Some(fd) => TunDevice::from_fd(fd, &self.config.tun, address),
+                None => {
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    {
+                        TunDevice::create(&self.config.tun, address).await
+                    }
+                    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                    {
+                        Err(crate::upper::tun::TunError::Configure(
+                            "TUN creation unsupported on this platform; supply an fd via start_with_tun_fd".into(),
+                        ))
+                    }
+                }
             };
             match device_result {
                 Ok(device) => {
