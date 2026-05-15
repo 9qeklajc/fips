@@ -1424,6 +1424,37 @@ mod platform {
     }
 }
 
+#[cfg(target_os = "android")]
+mod platform {
+    //! Android TUN configuration is owned by the JVM (`VpnService`). The fd
+    //! is passed into the node via [`super::TunDevice::from_fd`]; these
+    //! functions are stubs that satisfy the cross-platform call sites.
+    use super::TunError;
+    use std::net::Ipv6Addr;
+
+    pub fn is_ipv6_disabled() -> bool {
+        false
+    }
+
+    pub async fn interface_exists(_name: &str) -> bool {
+        false
+    }
+
+    pub async fn delete_interface(_name: &str) -> Result<(), TunError> {
+        Ok(())
+    }
+
+    pub async fn configure_interface(
+        _name: &str,
+        _addr: Ipv6Addr,
+        _mtu: u16,
+    ) -> Result<(), TunError> {
+        Err(TunError::Configure(
+            "interface configuration is handled by VpnService on Android".into(),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
