@@ -638,6 +638,20 @@ impl Node {
 
     // === State Transitions ===
 
+    /// Start the node with an existing TUN file descriptor.
+    ///
+    /// Stores the fd for adoption during TUN initialization, then calls
+    /// [`Node::start`]. Used on Android where `VpnService` creates and
+    /// configures the TUN device, then hands the fd to the node.
+    #[cfg(unix)]
+    pub async fn start_with_tun_fd(
+        &mut self,
+        fd: std::os::unix::io::RawFd,
+    ) -> Result<(), NodeError> {
+        self.external_tun_fd = Some(fd);
+        self.start().await
+    }
+
     /// Start the node.
     ///
     /// Initializes the TUN interface (if configured), spawns I/O threads,
@@ -705,7 +719,22 @@ impl Node {
         // Initialize TUN interface last, after transports and peers are ready
         if self.config.tun.enabled {
             let address = *self.identity.address();
-            match TunDevice::create(&self.config.tun, address).await {
+            let device_result = match self.external_tun_fd {
+                Some(fd) => TunDevice::from_fd(fd, &self.config.tun, address),
+                None => {
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    {
+                        TunDevice::create(&self.config.tun, address).await
+                    }
+                    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                    {
+                        Err(crate::upper::tun::TunError::Configure(
+                            "TUN creation unsupported on this platform; supply an fd via start_with_tun_fd".into(),
+                        ))
+                    }
+                }
+            };
+            match device_result {
                 Ok(device) => {
                     let mtu = device.mtu();
                     let name = device.name().to_string();

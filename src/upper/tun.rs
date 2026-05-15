@@ -31,7 +31,7 @@ use tracing::error;
 use tracing::{debug, trace};
 #[cfg(windows)]
 use tracing::{error, warn};
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use tun::Layer;
 
 /// Read-only handle to the per-destination path MTU map. Populated by
@@ -217,6 +217,9 @@ impl TunDevice {
     /// Otherwise, creates a new TUN device.
     ///
     /// This requires CAP_NET_ADMIN capability (run with sudo or setcap).
+    /// Not available on Android — use [`TunDevice::from_fd`] to adopt the
+    /// fd provided by `VpnService`.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub async fn create(config: &TunConfig, address: FipsAddress) -> Result<Self, TunError> {
         // Check if IPv6 is enabled
         if platform::is_ipv6_disabled() {
@@ -265,6 +268,32 @@ impl TunDevice {
         Ok(Self {
             device,
             name: actual_name,
+            mtu,
+            address,
+        })
+    }
+
+    /// Wrap an existing TUN file descriptor (e.g. from Android `VpnService`).
+    ///
+    /// The fd is expected to be already configured (address, MTU, routes)
+    /// by the host environment. Platform-level interface configuration is
+    /// skipped — the fd is adopted as-is into a `tun::Device`.
+    pub fn from_fd(
+        fd: std::os::unix::io::RawFd,
+        config: &TunConfig,
+        address: FipsAddress,
+    ) -> Result<Self, TunError> {
+        let mut tun_config = tun::Configuration::default();
+        #[allow(deprecated)]
+        tun_config.raw_fd(fd);
+
+        let device = tun::create(&tun_config)?;
+        let name = config.name().to_string();
+        let mtu = config.mtu();
+
+        Ok(Self {
+            device,
+            name,
             mtu,
             address,
         })
@@ -1395,6 +1424,37 @@ mod platform {
             )));
         }
         Ok(())
+    }
+}
+
+#[cfg(target_os = "android")]
+mod platform {
+    //! Android TUN configuration is owned by the JVM (`VpnService`). The fd
+    //! is passed into the node via [`super::TunDevice::from_fd`]; these
+    //! functions are stubs that satisfy the cross-platform call sites.
+    use super::TunError;
+    use std::net::Ipv6Addr;
+
+    pub fn is_ipv6_disabled() -> bool {
+        false
+    }
+
+    pub async fn interface_exists(_name: &str) -> bool {
+        false
+    }
+
+    pub async fn delete_interface(_name: &str) -> Result<(), TunError> {
+        Ok(())
+    }
+
+    pub async fn configure_interface(
+        _name: &str,
+        _addr: Ipv6Addr,
+        _mtu: u16,
+    ) -> Result<(), TunError> {
+        Err(TunError::Configure(
+            "interface configuration is handled by VpnService on Android".into(),
+        ))
     }
 }
 

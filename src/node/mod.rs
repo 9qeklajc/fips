@@ -40,6 +40,7 @@ use crate::cache::CoordCache;
 use crate::node::session::SessionEntry;
 use crate::peer::{ActivePeer, PeerConnection};
 #[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::transport::ethernet::EthernetTransport;
 use crate::transport::tcp::TcpTransport;
 use crate::transport::tor::TorTransport;
@@ -497,6 +498,19 @@ pub struct Node {
     /// Static hostname → npub mapping for DNS resolution.
     /// Built at construction from peer aliases and /etc/fips/hosts.
     host_map: Arc<HostMap>,
+
+    // === In-Process Mobile/Embedding Bridge ===
+    /// Receiver for an externally-installed control channel.
+    /// When set via [`Node::set_control_channel`], the RX loop reads control
+    /// requests from this channel in addition to (or instead of) the optional
+    /// control socket. Used for in-process embedding such as Android.
+    external_control_rx: Option<tokio::sync::mpsc::Receiver<crate::control::ControlMessage>>,
+
+    /// Externally-provided TUN file descriptor (e.g. from Android `VpnService`).
+    /// When set via [`Node::start_with_tun_fd`], `start()` adopts this fd
+    /// into a `TunDevice` and skips local interface creation/configuration.
+    #[cfg(unix)]
+    external_tun_fd: Option<std::os::unix::io::RawFd>,
 }
 
 impl Node {
@@ -638,6 +652,9 @@ impl Node {
             peer_acl,
             host_map,
             path_mtu_lookup: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            external_control_rx: None,
+            #[cfg(unix)]
+            external_tun_fd: None,
         })
     }
 
@@ -769,6 +786,9 @@ impl Node {
             peer_acl,
             host_map,
             path_mtu_lookup: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            external_control_rx: None,
+            #[cfg(unix)]
+            external_tun_fd: None,
         })
     }
 
@@ -778,6 +798,32 @@ impl Node {
         node.is_leaf_only = true;
         node.bloom_state = BloomState::leaf_only(*node.identity.node_addr());
         Ok(node)
+    }
+
+    /// Install an in-process control channel.
+    ///
+    /// Returns the sender half. Requests sent to this channel are processed
+    /// by the node's RX loop alongside any control-socket clients. Used by
+    /// embedders (Android, Tauri) that want to dispatch control commands
+    /// without going through a Unix/TCP socket.
+    ///
+    /// Must be called before [`Node::run_rx_loop`]; the receiver is consumed
+    /// when the RX loop starts.
+    pub fn set_control_channel(
+        &mut self,
+    ) -> tokio::sync::mpsc::Sender<crate::control::ControlMessage> {
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        self.external_control_rx = Some(rx);
+        tx
+    }
+
+    /// Take back an externally-installed TUN file descriptor.
+    ///
+    /// Used on Android to hand the fd back to the JVM after node shutdown so
+    /// `VpnService` can close it. Returns `None` if no external fd was set.
+    #[cfg(unix)]
+    pub fn take_tun_fd(&mut self) -> Option<std::os::unix::io::RawFd> {
+        self.external_tun_fd.take()
     }
 
     /// Create transport instances from configuration.
@@ -803,7 +849,7 @@ impl Node {
         }
 
         // Create Ethernet transport instances (Unix only — requires raw sockets)
-        #[cfg(unix)]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             let eth_instances: Vec<_> = self
                 .config
@@ -916,7 +962,7 @@ impl Node {
         &self,
         addr_str: &str,
     ) -> Result<(TransportId, TransportAddr), NodeError> {
-        #[cfg(unix)]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             let (iface, mac_str) = addr_str.split_once('/').ok_or_else(|| {
                 NodeError::NoTransportForType(format!(
@@ -948,7 +994,7 @@ impl Node {
 
             Ok((transport_id, TransportAddr::from_bytes(&mac)))
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             Err(NodeError::NoTransportForType(
                 "Ethernet transport is not supported on this platform".to_string(),
