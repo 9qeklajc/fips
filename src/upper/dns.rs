@@ -128,7 +128,24 @@ pub fn handle_dns_packet(
         return Some((bytes, None));
     }
 
-    // Unresolvable name: NXDOMAIN
+    // Outside our authority (no `.fips` suffix): REFUSED, not NXDOMAIN. NXDOMAIN
+    // is a definitive negative that stops resolvers from trying alternate
+    // upstreams; REFUSED signals "ask someone else" so a stub resolver (e.g.
+    // Android's bionic, which queries each `addDnsServer` entry in turn) will
+    // fall through to the next configured nameserver and the public DNS hit
+    // continues to work on devices where the FIPS responder is listed first.
+    let qname_lower = qname.to_ascii_lowercase();
+    let is_fips_zone = qname_lower == "fips"
+        || qname_lower == "fips."
+        || qname_lower.ends_with(".fips")
+        || qname_lower.ends_with(".fips.");
+    if !is_fips_zone {
+        *response.rcode_mut() = RCODE::Refused;
+        let bytes = response.build_bytes_vec_compressed().ok()?;
+        return Some((bytes, None));
+    }
+
+    // Unresolvable name inside the `.fips` zone: NXDOMAIN (authoritative).
     *response.rcode_mut() = RCODE::NameError;
     let bytes = response.build_bytes_vec_compressed().ok()?;
     Some((bytes, None))
