@@ -270,6 +270,32 @@ impl TunDevice {
         })
     }
 
+    /// Wrap an existing TUN file descriptor (e.g. from Android `VpnService`).
+    ///
+    /// The fd is expected to be already configured (address, MTU, routes)
+    /// by the host environment. Platform-level interface configuration is
+    /// skipped — the fd is adopted as-is into a `tun::Device`.
+    pub fn from_fd(
+        fd: std::os::unix::io::RawFd,
+        config: &TunConfig,
+        address: FipsAddress,
+    ) -> Result<Self, TunError> {
+        let mut tun_config = tun::Configuration::default();
+        #[allow(deprecated)]
+        tun_config.raw_fd(fd);
+
+        let device = tun::create(&tun_config)?;
+        let name = config.name().to_string();
+        let mtu = config.mtu();
+
+        Ok(Self {
+            device,
+            name,
+            mtu,
+            address,
+        })
+    }
+
     /// Get the device name.
     pub fn name(&self) -> &str {
         &self.name

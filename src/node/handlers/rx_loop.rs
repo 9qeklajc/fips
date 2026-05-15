@@ -57,9 +57,19 @@ impl Node {
         let mut tick =
             tokio::time::interval(Duration::from_secs(self.config.node.tick_interval_secs));
 
-        // Set up control socket channel
-        let (control_tx, mut control_rx) =
-            tokio::sync::mpsc::channel::<crate::control::ControlMessage>(32);
+        // Set up control channel: prefer external in-process channel when
+        // installed via Node::set_control_channel (embedded mode); otherwise
+        // create one and optionally wire it to a Unix/TCP control socket.
+        let (control_tx, mut control_rx) = match self.external_control_rx.take() {
+            Some(rx) => {
+                // External rx is the sole producer path. A dummy tx satisfies
+                // the local binding; dropped immediately below.
+                let (dummy_tx, _) =
+                    tokio::sync::mpsc::channel::<crate::control::ControlMessage>(1);
+                (dummy_tx, rx)
+            }
+            None => tokio::sync::mpsc::channel::<crate::control::ControlMessage>(32),
+        };
 
         if self.config.node.control.enabled {
             let config = self.config.node.control.clone();
